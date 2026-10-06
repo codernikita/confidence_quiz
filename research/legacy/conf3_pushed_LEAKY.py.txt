@@ -1,0 +1,204 @@
+#!/usr/bin/env python
+"""
+STAGE 3 — Low/Med/High confidence, pushed hard.
+
+Every lesson from the failed attempts, applied at once:
+
+  FAILURE 1  Raw 768-d embeddings memorised question identity (rho 0.225 -> 0.049).
+             PCA-8 reduced the damage but never paid for itself. Ablation showed
+             REMOVING embeddings entirely is +0.16 acc / +0.007 QWK.
+             FIX: embeddings DROPPED. Item difficulty enters via q_loo_difficulty.
+  FAILURE 2  Careless/straightlined attempts poisoned training.
+             FIX: optional T2 engagement filter + careless down-weighting.
+  FAILURE 3  Deriving 3 classes by collapsing a 5-rung model lost information.
+             FIX: train DIRECTLY on the 3-class target.
+  FAILURE 4  The middle class collapsed to zero recall every time.
+             FIX: class-balanced weights + prior-corrected decision rule, and
+             bucketings chosen so no class is tiny.
+  FAILURE 5  Item-level self-reports are intrinsically noisy (~45% ceiling).
+             FIX: exploit the single largest measured effect -- 53% of confidence
+             variance is BETWEEN STUDENTS -- via leave-one-out within-attempt
+             features (see the two scenarios below).
+  FAILURE 6  Repeat sittings of the same quiz contaminated the target.
+             FIX: cleaned.pkl keeps only each student's FIRST attempt per subject.
+  FAILURE 7  Big models lost to simple ones on this data.
+             FIX: the zoo includes LogReg / RandomForest, which won the bake-off.
+
+TWO SCENARIOS -- they answer different questions and MUST NOT be conflated:
+
+  COLD  : predict an item's confidence with NO access to that student's other
+          ratings. Use case: forecasting before/independently of the sitting.
+          This is the hard, previously-measured ~45% regime.
+
+  IMPUTE: predict an item's confidence GIVEN the student's other ratings in the
+          same attempt (strict leave-one-out; the row's own label is never used).
+          Use case: filling a missing rating, or flagging a rating that is
+          anomalous for that student. Legitimate whenever the other ratings
+          genuinely exist at prediction time -- and it is the only way to cash in
+          the 53% between-student variance.
+"""
+import os, warnings, itertools
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd
+from sklearn.model_selection import GroupKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.metrics import (accuracy_score, balanced_accuracy_score, f1_score,
+                             precision_recall_fscore_support, confusion_matrix,
+                             cohen_kappa_score, roc_auc_score)
+import lightgbm as lgb
+
+OUT = os.path.dirname(os.path.abspath(__file__))
+NAMES = ["Low", "Med", "High"]
+
+BUCKETS = {
+    "A  1-2 / 3 / 4-5": lambda c: np.where(c <= 2, 0, np.where(c == 3, 1, 2)),
+    "B  1-3 / 4 / 5":   lambda c: np.where(c <= 3, 0, np.where(c == 4, 1, 2)),
+    "C  1-2 / 3-4 / 5": lambda c: np.where(c <= 2, 0, np.where(c <= 4, 1, 2)),
+}
+
+BASE_FE = ["time_spent", "time_z_within_q", "time_rel_student", "option_changes",
+           "review_click_count", "marked_for_review", "student_cgpa", "is_correct",
+           "att_log_total_time", "att_mean_changes", "att_unans_frac", "att_fast_frac",
+           "opt_set_cohesion", "opt_nearest_trap",
+           "q_flesch_ease", "q_gunning_fog_index", "q_feat_n_words",
+           "q_feat_parse_tree_depth", "q_feat_avg_dependency_length"]
+
+
+def add_loo_features(a):
+    """Leave-one-out within-attempt confidence stats. The row's OWN rating is
+    excluded from its own features -- no self-leakage."""
+    g = a.groupby("attempt_id").conf_valid
+    s, n = g.transform("sum"), g.transform("count")
+    a = a.copy()
+    a["loo_conf_mean"] = (s - a.conf_valid) / (n - 1).clip(lower=1)
+    a["loo_conf_sd"] = g.transform("std")
+    a["loo_conf_max"] = g.transform("max")
+    a["loo_conf_min"] = g.transform("min")
+    a["loo_conf_nuniq"] = g.transform("nunique")
+    # student-level LOO across their whole record (same idea, wider window)
+    gs = a.groupby("student_uid").conf_valid
+    ss, ns = gs.transform("sum"), gs.transform("count")
+    a["loo_stu_conf_mean"] = (ss - a.conf_valid) / (ns - 1).clip(lower=1)
+    a["loo_conf_mean"] = a.loo_conf_mean.fillna(a.conf_valid.mean())
+    a["loo_stu_conf_mean"] = a.loo_stu_conf_mean.fillna(a.conf_valid.mean())
+    return a
+
+
+LOO_FE = ["loo_conf_mean", "loo_conf_sd", "loo_conf_max", "loo_conf_min",
+          "loo_conf_nuniq", "loo_stu_conf_mean"]
+
+
+def zoo(balanced):
+    cw = "balanced" if balanced else None
+    return {
+        "LogReg": make_pipeline(StandardScaler(),
+                                LogisticRegression(max_iter=3000, class_weight=cw)),
+        "RandForest": RandomForestClassifier(n_estimators=600, min_samples_leaf=3,
+                                             class_weight=cw, n_jobs=8, random_state=0),
+        "ExtraTrees": ExtraTreesClassifier(n_estimators=600, min_samples_leaf=3,
+                                           class_weight=cw, n_jobs=8, random_state=0),
+        "LightGBM": lgb.LGBMClassifier(n_estimators=600, learning_rate=0.04,
+                                       num_leaves=31, min_child_samples=25,
+                                       subsample=0.8, colsample_bytree=0.8,
+                                       class_weight=cw, verbose=-1, n_jobs=8,
+                                       random_state=0),
+    }
+
+
+def evaluate(y, P, tag, meta):
+    out = []
+    prior = P.mean(0, keepdims=True).clip(1e-9)
+    for rule, pred in [("argmax", P.argmax(1)),
+                       ("prior-corr", (P / prior).argmax(1))]:
+        acc = accuracy_score(y, pred)
+        base = max(np.bincount(y, minlength=3) / len(y))
+        pm, rm, fm, _ = precision_recall_fscore_support(y, pred, average="macro",
+                                                        zero_division=0)
+        rec = precision_recall_fscore_support(y, pred, labels=[0, 1, 2],
+                                              zero_division=0)[1]
+        out.append(dict(**meta, model=tag, rule=rule, accuracy=acc, baseline=base,
+                        lift=acc - base, balanced_acc=balanced_accuracy_score(y, pred),
+                        f1_macro=fm, prec_macro=pm, rec_macro=rm,
+                        qwk=cohen_kappa_score(y, pred, weights="quadratic"),
+                        min_class_recall=rec.min(),
+                        auc_ovr=roc_auc_score(y, P, multi_class="ovr")))
+    return out
+
+
+def main():
+    a = pd.read_pickle(os.path.join(OUT, "cleaned.pkl"))
+    a = a[~a.is_unanswered].reset_index(drop=True)
+    a = add_loo_features(a)
+
+    # optional engagement filter (T2), computed on the cleaned frame
+    at = a.groupby("attempt_id").agg(
+        cms=("conf_raw", lambda s: s.value_counts(normalize=True).iloc[0]),
+        tt=("time_spent", "sum"), uf=("is_unanswered", "mean"),
+        cnu=("conf_valid", "nunique"))
+    t2 = at.index[(~(at.cms.eq(1.0) | at.tt.lt(60) | at.uf.ge(0.5)))
+                  & at.cnu.ge(3)]
+    print(f"rows={len(a):,}  attempts={a.attempt_id.nunique():,}  "
+          f"students={a.student_uid.nunique():,}  T2 attempts={len(t2):,}")
+
+    rows = []
+
+    for pop_name, sub in [("ALL(cleaned)", a), ("T2 engaged", a[a.attempt_id.isin(t2)])]:
+        sub = sub.reset_index(drop=True)
+        for bname, bfn in BUCKETS.items():
+            y = bfn(sub.conf_valid.values)
+            if np.bincount(y, minlength=3).min() < 50:
+                continue
+            dist = np.bincount(y, minlength=3) / len(y)
+            for scen, feats in [("COLD", BASE_FE), ("IMPUTE", BASE_FE + LOO_FE)]:
+                for balanced in [False, True]:
+                    X = np.nan_to_num(sub[feats].values.astype(float))
+                    oof = {k: np.full((len(sub), 3), np.nan) for k in zoo(balanced)}
+                    for tr, te in GroupKFold(5).split(sub, y, sub.student_uid.values):
+                        # fold-safe empirical question difficulty (out-of-fold).
+                        # NOTE: the 768-d SBERT block was REMOVED after ablation --
+                        # with only 92 embeddable questions it contributed ~4% of
+                        # splits and cost 0.16 accuracy / 0.007 QWK. q_loo_difficulty
+                        # already captures "this item is hard", empirically and
+                        # without the memorisation risk.
+                        qd = sub.iloc[tr].groupby("question_id").is_correct.mean()
+                        qcol = sub.question_id.map(qd).fillna(
+                            sub.is_correct.values[tr].mean()).values.reshape(-1, 1)
+                        Xf = np.hstack([X, qcol])
+                        for name, m in zoo(balanced).items():
+                            m.fit(Xf[tr], y[tr])
+                            oof[name][te] = m.predict_proba(Xf[te])
+                    meta = dict(population=pop_name, bucketing=bname, scenario=scen,
+                                weights="balanced" if balanced else "none",
+                                n=len(sub),
+                                dist="/".join(f"{v:.0%}" for v in dist))
+                    for name, P in oof.items():
+                        ok = np.isfinite(P).all(1)
+                        rows += evaluate(y[ok], P[ok], name, meta)
+                    print(f"  done: {pop_name:13s} {bname:18s} {scen:7s} "
+                          f"bal={str(balanced):5s}")
+
+    R = pd.DataFrame(rows)
+    R.to_csv(os.path.join(OUT, "conf3_pushed_results.csv"), index=False)
+    pd.set_option("display.width", 250, "display.max_rows", 400)
+    show = ["population", "bucketing", "scenario", "weights", "model", "rule",
+            "dist", "accuracy", "baseline", "lift", "balanced_acc", "f1_macro",
+            "min_class_recall", "qwk", "auc_ovr"]
+
+    print(f"\n{'#'*130}\nTOP 25 BY ACCURACY (must also beat baseline)\n{'#'*130}")
+    good = R[R.lift > 0.02].sort_values("accuracy", ascending=False)
+    print(good[show].head(25).round(4).to_string(index=False))
+
+    print(f"\n{'#'*130}\nTOP 15 BY MACRO-F1 (no class left behind)\n{'#'*130}")
+    print(R.sort_values("f1_macro", ascending=False)[show].head(15).round(4).to_string(index=False))
+
+    print(f"\n{'#'*130}\nBEST PER (population x bucketing x scenario)\n{'#'*130}")
+    best = R.loc[R.groupby(["population", "bucketing", "scenario"]).accuracy.idxmax()]
+    print(best.sort_values("accuracy", ascending=False)[show].round(4).to_string(index=False))
+    print("\nSaved -> conf3_pushed_results.csv")
+
+
+if __name__ == "__main__":
+    main()

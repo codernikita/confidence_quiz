@@ -310,3 +310,4 @@ to the internet.
 | `scripts/check_firestore.mjs` | Read-only health check: bank, attempts, field integrity |
 | `scripts/deploy_aws.sh` | Build → S3 → CloudFront invalidation |
 | `DEPLOY_AWS.md` | One-time AWS setup, then the one-line deploy |
+| `METHODOLOGY.md` | Full methodology: data, all 23 features, validation, limitations |
