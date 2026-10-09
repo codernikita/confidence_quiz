@@ -5,9 +5,25 @@ import { CONFIDENCE_WORDS } from "./QuestionView";
 
 const pct = (v) => `${(v * 100).toFixed(0)}%`;
 
-export default function Results({ analysis, saveState, rollNumber, attemptNumber = 1 }) {
+const SEVERITY = {
+  none: { label: "On track", chip: "chip--good" },
+  low: { label: "Minor gap", chip: "chip--warn" },
+  moderate: { label: "Moderate gap", chip: "chip--warn" },
+  high: { label: "Serious gap", chip: "chip--bad" },
+};
+
+export default function Results({
+  analysis,
+  saveState,
+  rollNumber,
+  attemptNumber = 1,
+  guidance = { status: "idle" },
+  onRetryGuidance,
+}) {
   const [view, setView] = useState("chart");
   const { items, calibrationResults, technicalResults, calibration } = analysis;
+  const perQuestion = guidance.data?.guidance.questions || {};
+  const topicCatalog = guidance.data?.guidance.topics || {};
 
   const summary = useMemo(() => {
     const answered = items.filter((i) => i.selectedOption);
@@ -109,6 +125,8 @@ export default function Results({ analysis, saveState, rollNumber, attemptNumber
           </div>
         </div>
       </div>
+
+      <StudyGuide guidance={guidance} items={items} onRetry={onRetryGuidance} />
 
       <div className="card">
         <div className="card__head">
@@ -264,7 +282,14 @@ export default function Results({ analysis, saveState, rollNumber, attemptNumber
         </div>
         <div>
           {items.map((it, i) => (
-            <ReviewRow key={it.questionId} item={it} index={i} />
+            <ReviewRow
+              key={it.questionId}
+              item={it}
+              index={i}
+              guide={perQuestion[it.questionId]}
+              topics={topicCatalog}
+              guideStatus={guidance.status}
+            />
           ))}
         </div>
       </div>
@@ -304,7 +329,218 @@ export default function Results({ analysis, saveState, rollNumber, attemptNumber
   );
 }
 
-function ReviewRow({ item, index }) {
+/* ---------------------------------------------------------- study guidance
+ * Written by Gemini (server/guidance.mjs) from each answer plus the two labels
+ * above. It arrives after the rest of the page, so every state -- loading,
+ * failed, ready -- has to leave the scores fully usable. */
+
+function StudyGuide({ guidance, items, onRetry }) {
+  const numberOf = useMemo(
+    () => Object.fromEntries(items.map((it, i) => [it.questionId, i + 1])),
+    [items],
+  );
+
+  if (guidance.status === "idle") return null;
+
+  return (
+    <div className="card">
+      <div className="card__head">
+        <h2 className="card__title">What to work on</h2>
+        <p className="card__sub">
+          Each answer, its behavioural state and its predicted confidence were
+          read together to judge how serious each gap is and what to study.
+        </p>
+      </div>
+
+      {guidance.status === "loading" && (
+        <div className="guide-pending">
+          <div className="spinner spinner--sm" />
+          <span>Reading your answers and putting together a study plan…</span>
+        </div>
+      )}
+
+      {guidance.status === "error" && (
+        <div className="note">
+          <strong>Study guidance is unavailable right now.</strong>{" "}
+          {guidance.error}
+          {onRetry && (
+            <div style={{ marginTop: 10 }}>
+              <button type="button" className="btn btn--ghost" onClick={onRetry}>
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {guidance.status === "ready" && (
+        <GuideOverview
+          overall={guidance.data.guidance.overall}
+          topics={guidance.data.guidance.topics || {}}
+          numberOf={numberOf}
+          model={guidance.data.model}
+        />
+      )}
+    </div>
+  );
+}
+
+function GuideOverview({ overall, topics, numberOf, model }) {
+  return (
+    <div className="stack">
+      <p className="guide-summary">{overall.summary}</p>
+
+      {overall.weakConcepts.length > 0 && (
+        <section>
+          <h3 className="guide__label">Concepts to strengthen</h3>
+          <ul className="concepts">
+            {overall.weakConcepts.map((c) => {
+              const sev = SEVERITY[c.severity] || SEVERITY.moderate;
+              return (
+                <li key={c.concept} className="concept">
+                  <div className="concept__head">
+                    <span className={`chip ${sev.chip}`}>{sev.label}</span>
+                    <b>{c.concept}</b>
+                    {c.questionIds
+                      .map((id) => numberOf[id])
+                      .filter(Boolean)
+                      .map((n) => (
+                        <span key={n} className="chip">
+                          Q{n}
+                        </span>
+                      ))}
+                  </div>
+                  <p className="concept__why">{c.why}</p>
+                  <ResourceList resources={topics[c.concept]?.resources} />
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {overall.strongConcepts.length > 0 && (
+        <section>
+          <h3 className="guide__label">Solid ground</h3>
+          <div className="chips">
+            {overall.strongConcepts.map((c) => (
+              <span key={c} className="chip chip--good">
+                {c}
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {overall.studyPlan.length > 0 && (
+        <section>
+          <h3 className="guide__label">Study plan</h3>
+          <ol className="guide__steps">
+            {overall.studyPlan.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ol>
+        </section>
+      )}
+
+      <p className="guide-credit">
+        Written by {model}. Every resource link was checked before being shown:
+        a direct link opened, and a search link means the exact page could not
+        be confirmed, so it searches for that title instead. AI-generated
+        guidance can be wrong. Per-question advice is under each question below.
+      </p>
+    </div>
+  );
+}
+
+const KIND_LABEL = {
+  video: "Video",
+  article: "Article",
+  docs: "Docs",
+  course: "Free course",
+  practice: "Practice",
+  book: "Free book",
+};
+
+// server/resources.mjs has already checked every link and swapped anything it
+// could not confirm for a search. The scheme is re-checked here anyway: the
+// address started life as model output, and only http(s) may become a link.
+function safeHref(r) {
+  if (/^https?:\/\//i.test(r.href || "")) return r.href;
+  const q = `${r.title} ${r.creator || ""}`.trim();
+  return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+}
+
+function ResourceList({ resources }) {
+  if (!resources?.length) return null;
+  return (
+    <ul className="sources">
+      {resources.map((r, i) => (
+        <li key={i} className="source">
+          <span className={`source__kind source__kind--${r.kind}`}>
+            {KIND_LABEL[r.kind] || r.kind}
+          </span>
+          <div>
+            <a href={safeHref(r)} target="_blank" rel="noopener noreferrer">
+              {r.title}
+            </a>
+            <div className="source__meta">
+              {r.creator}
+              {r.link === "verified" ? (
+                <span className="source__checked"> · link checked</span>
+              ) : (
+                <span>
+                  {" "}
+                  · opens {r.link === "youtube-search" ? "a YouTube search" : "a web search"}
+                </span>
+              )}
+            </div>
+            <div className="sources__why">{r.why}</div>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function QuestionGuide({ guide, topics }) {
+  const sev = SEVERITY[guide.severity] || SEVERITY.moderate;
+  return (
+    <div className="guide">
+      <div className="guide__head">
+        <span className={`chip ${sev.chip}`}>{sev.label}</span>
+        <span className="guide__reason">{guide.severityReason}</span>
+      </div>
+
+      <p className="guide__diag">{guide.diagnosis}</p>
+
+      {guide.topics.length > 0 && (
+        <>
+          <h4 className="guide__label">Topics and free resources</h4>
+          {guide.topics.map((name) => (
+            <div key={name} className="topic">
+              <span className="chip chip--accent">{name}</span>
+              <ResourceList resources={topics[name]?.resources} />
+            </div>
+          ))}
+        </>
+      )}
+
+      {guide.nextSteps.length > 0 && (
+        <>
+          <h4 className="guide__label">Next steps</h4>
+          <ol className="guide__steps">
+            {guide.nextSteps.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ol>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ReviewRow({ item, index, guide, topics, guideStatus }) {
   const state = STATES[item.state];
   const stateClass =
     item.state === "mastery"
@@ -355,6 +591,12 @@ function ReviewRow({ item, index }) {
       </div>
 
       {item.explanation && <p className="review__body">{item.explanation}</p>}
+
+      {guide ? (
+        <QuestionGuide guide={guide} topics={topics} />
+      ) : guideStatus === "loading" ? (
+        <p className="guide guide--pending">Preparing study guidance…</p>
+      ) : null}
     </div>
   );
 }

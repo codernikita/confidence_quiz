@@ -6,6 +6,7 @@ import TechnicalStage from "./components/TechnicalStage";
 import Results from "./components/Results";
 import { createTelemetry } from "./lib/telemetry";
 import { loadBank, saveAttempt, countPriorAttempts } from "./lib/firestore";
+import { fetchGuidance, GUIDANCE_ENABLED } from "./lib/guidance";
 import {
   watchAuth,
   resolveRedirect,
@@ -34,6 +35,8 @@ export default function App() {
   const [student, setStudent] = useState({ rollNumber: "", cgpa: null });
   const [analysis, setAnalysis] = useState(null);
   const [saveState, setSaveState] = useState("idle");
+  // { status: "idle" | "loading" | "ready" | "error", data, error }
+  const [guidance, setGuidance] = useState({ status: "idle" });
   const [timeLeft, setTimeLeft] = useState(null);
   const [theme, setTheme] = useState(
     () => localStorage.getItem("bisq-theme") || "system",
@@ -154,6 +157,18 @@ export default function App() {
 
   const config = bank?.config || DEFAULT_CONFIG;
 
+  /* Gemini study guidance. Started from the submit handler rather than an
+   * effect so StrictMode's double-mount does not send every attempt twice.
+   * It never blocks the results page: the scores render at once and the
+   * guidance fills in when it arrives. */
+  const requestGuidance = useCallback((result) => {
+    if (!GUIDANCE_ENABLED) return;
+    setGuidance({ status: "loading" });
+    fetchGuidance(result)
+      .then((data) => setGuidance({ status: "ready", data }))
+      .catch((err) => setGuidance({ status: "error", error: err.message }));
+  }, []);
+
   const submit = useCallback(async () => {
     setStage(STAGES.SCORING);
     telemetry.pause();
@@ -171,6 +186,7 @@ export default function App() {
       cgpa: student.cgpa,
     });
     setAnalysis(result);
+    requestGuidance(result);
 
     const payload = {
       rollNumber: student.rollNumber,
@@ -230,7 +246,7 @@ export default function App() {
 
     setStage(STAGES.RESULTS);
     window.scrollTo({ top: 0, behavior: "auto" });
-  }, [bank, student, telemetry, account, priorAttempts]);
+  }, [bank, student, telemetry, account, priorAttempts, requestGuidance]);
 
   /* ---------------------------------------------------- timer
    * Gates the whole sitting; expiry force-submits whatever is there. */
@@ -340,6 +356,8 @@ export default function App() {
           saveState={saveState}
           rollNumber={student.rollNumber}
           attemptNumber={priorAttempts + 1}
+          guidance={guidance}
+          onRetryGuidance={() => requestGuidance(analysis)}
         />
       )}
     </div>

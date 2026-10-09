@@ -4,8 +4,14 @@ A quiz that collects confidence ratings on **three** reasoning questions, then
 **predicts** confidence on every technical question that follows — and shows the
 student a chart of the result.
 
-React + Vite. **Firestore is the only backend**; the model runs in the browser.
-Deploys to AWS as a static site (S3 + CloudFront) — see [DEPLOY_AWS.md](DEPLOY_AWS.md).
+React + Vite. **Firestore is the only backend for the quiz**; the model runs in
+the browser. Deploys to AWS as a static site (S3 + CloudFront) — see
+[DEPLOY_AWS.md](DEPLOY_AWS.md).
+
+After scoring, a small Node server (`server/`) sends the attempt to **Gemini via
+LangChain** and returns per-question study guidance — see
+[Study guidance](#study-guidance-gemini). It is the one part that needs a
+server, because it holds the API key.
 
 ---
 
@@ -183,6 +189,73 @@ A deterministic rule over logged fields — no model, no caveat:
 *hesitated = changed an option, flagged it, revisited it, or spent longer than
 their own attempt average.*
 
+### Study guidance (Gemini)
+
+Every question ends up with two labels: the **behavioural state** above (a rule,
+a fact) and the **predicted confidence** class Low / Medium / High (a model
+estimate, right about two times in three). `server/guidance.mjs` sends both,
+with the question, the options, the student's answer and the explanation, to
+Gemini in **one consolidated LangChain call** per attempt:
+
+```
+ChatPromptTemplate (system rubric + attempt JSON)
+  → ChatGoogleGenerativeAI.withStructuredOutput(zod schema)
+  → retried once only if the JSON fails to parse
+```
+
+Gemini returns, for each question, a **severity** (`none` / `low` / `moderate` /
+`high`), a diagnosis that names the faulty belief behind the option chosen, the
+topics tested, and next steps. Topics form one catalog per attempt (a concept
+shared by three questions is one topic), and each topic carries **free study
+resources** — YouTube videos, blog posts and tutorials, documentation, free
+courses and practice sets — scaled to the worst severity on that topic: three
+or four for a serious gap, two for a minor one, one to go deeper on mastery. It
+also returns an overall summary, the weak concepts with their resources, and a
+study plan. The results page shows the overall view in a "What to work on" card
+and the per-question advice under each question.
+
+The severity rubric lives in the system prompt. A confident wrong answer
+(misconception) is the most severe case; a wrong answer on an easy or medium
+item goes up a step; a near-miss on a hard item comes down a step. The prompt
+tells Gemini that the predicted confidence is a soft signal, that the student's
+own rating overrides it on calibration items, and that it must never present
+the estimate as fact.
+
+Safeguards:
+
+- **The key stays on the server.** The browser posts to `/api/guidance`, which
+  Vite proxies to `server/index.mjs` on :8787. LangChain is not in the bundle.
+- **No personal data is sent.** No roll number, email, name or CGPA; only the
+  questions and how they were answered.
+- **Every resource link is checked before it is shown** (`server/resources.mjs`).
+  Gemini picks good resources but misremembers their addresses: from memory,
+  8 of 8 YouTube links it produced were invented video IDs. So YouTube links
+  are confirmed through YouTube's oEmbed endpoint (which also supplies the real
+  title and channel), pages are fetched and must load a real, on-topic page
+  that is not a site's home page, and anything that fails becomes a labelled
+  search — YouTube search for "title channel", or a Google search restricted to
+  the site. Typically about a third of links verify directly; the rest are
+  searches that land on the named resource. Checks take a few seconds, run in
+  parallel and are cached for a day. The fetcher only reaches public hosts on
+  standard ports and re-checks every redirect, since the URLs are model output.
+- **Direct video links need search grounding.** Gemini's Google Search tool
+  would return real, current video URLs, but it needs a billed Gemini plan (a
+  free-tier key gets a 429), so it is not used.
+- **The page never waits on it.** Scores render immediately, guidance fills in
+  when it arrives (typically 30–60 s), and any failure shows a readable reason
+  with a retry button.
+- **One overloaded model does not fail the request.** The chain is tried model
+  by model (see `GEMINI_FALLBACK_MODELS` below); a bad key or a cancelled
+  request stops at once instead.
+
+To see exactly what Gemini is sent, without taking the quiz:
+
+```bash
+npm run guidance:prompt                # formatted prompt for a sample attempt
+npm run guidance:prompt -- --schema    # JSON schema Gemini must answer in
+npm run guidance:prompt -- --live      # call Gemini and print the result
+```
+
 ---
 
 ## Running locally
@@ -193,7 +266,23 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Fill in your Firebase web config in `.env.local`, then open http://localhost:5173.
+Fill in your Firebase web config and `GEMINI_API_KEY` in `.env.local`, then
+open http://localhost:5173. `npm run dev` starts both Vite (`web`) and the
+guidance server (`api`); `npm run dev:web` starts Vite alone.
+
+Without `GEMINI_API_KEY` the quiz still works end to end; the results page just
+says study guidance is unavailable. The server re-reads `.env.local` on every
+request, so adding or changing the key needs no restart — press **Try again** on
+the results page.
+
+`GEMINI_MODEL` overrides the default `gemini-3.8-flash`. `GEMINI_THINKING_LEVEL`
+defaults to `low`, which measured 37 s against 52 s at the model's default on a
+15-question attempt with identical severities; set it empty for the default. When a model answers
+503 "high demand" (common on the newest Flash) or is not available to the key,
+the server moves on to `GEMINI_FALLBACK_MODELS` (default 3.5 → 3.7 → 3.6
+Flash, then `gemini-3.5-flash-lite` as a last resort), and the page credits whichever model
+actually answered. `curl localhost:8787/api/health` shows the key status and
+model order.
 
 Firebase config is optional for development. Without it the app **skips the
 sign-in screen entirely**, runs on the bundled question bank, shows a banner
@@ -203,6 +292,13 @@ analysis — works normally.
 `localhost` is in Firebase's authorized-domain list by default, so Google
 sign-in works locally as soon as you add real config. The deployed domain is
 not — see step 7 of [DEPLOY_AWS.md](DEPLOY_AWS.md).
+
+The S3 + CloudFront deployment serves static files only, so the guidance API is
+deployed separately, to **AWS Lambda behind a function URL**, by
+`scripts/deploy_guidance_lambda.sh` — see step 9 of
+[DEPLOY_AWS.md](DEPLOY_AWS.md). Deployed, it only serves students signed in
+to the quiz's Firebase project. A production build without
+`VITE_GUIDANCE_API_URL` leaves guidance out rather than showing an error.
 
 ```bash
 npm run build
@@ -295,9 +391,17 @@ to the internet.
 | Path | Purpose |
 |---|---|
 | `src/model/predict.js` | LOO stats, feature builder, both heads, state taxonomy |
+| `server/guidance.mjs` | LangChain prompt, Gemini chain, request/response schemas |
+| `server/index.mjs` | Guidance API (`POST /api/guidance`), holds the Gemini key |
+| `server/resources.mjs` | Checks every resource link; falls back to labelled searches |
+| `server/lambda.mjs` | Same API as a Lambda function-URL handler (production) |
+| `server/auth.mjs` | Verifies the student's Firebase ID token on the deployed API |
+| `scripts/deploy_guidance_lambda.sh` | Builds and deploys the Lambda; `--print-policy` for IAM |
+| `src/lib/guidance.js` | Builds the guidance request from a scored attempt |
+| `scripts/preview_guidance_prompt.mjs` | Prints the exact prompt; `--live` calls Gemini |
 | `src/model/coefficients.json` | Exported weights + validated metrics |
 | `src/components/ConfidenceChart.jsx` | The seaborn-style line plot |
-| `src/components/Results.jsx` | Results page: stats, chart, LOO table, review |
+| `src/components/Results.jsx` | Results page: stats, study guidance, chart, LOO table, review |
 | `src/components/CalibrationStage.jsx` | Section 1 — the only place a rating widget exists |
 | `src/components/TechnicalStage.jsx` | Section 2 — navigation, flags, telemetry |
 | `src/components/SignIn.jsx` | Google sign-in screen, popup → redirect fallback |

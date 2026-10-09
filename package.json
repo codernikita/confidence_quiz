@@ -5,19 +5,28 @@
   "type": "module",
   "description": "Calibrated confidence-prediction quiz. React + Vite + Firestore, static-hosted on AWS S3/CloudFront.",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -n web,api -c cyan,magenta \"npm:dev:web\" \"npm:dev:api\"",
+    "dev:web": "vite",
+    "dev:api": "node --watch server/index.mjs",
+    "server": "node server/index.mjs",
     "build": "vite build",
     "preview": "vite preview --port 4173",
+    "guidance:prompt": "node scripts/preview_guidance_prompt.mjs",
     "seed": "node scripts/seed_firestore.mjs",
     "check": "node scripts/check_firestore.mjs"
   },
   "dependencies": {
+    "@langchain/core": "^1.2.16",
+    "@langchain/google-genai": "^2.3.2",
     "firebase": "^10.14.1",
+    "jose": "^6.2.12",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^10.0.5",
     "firebase-admin": "^13.0.2",
     "vite": "^5.4.11"
   }

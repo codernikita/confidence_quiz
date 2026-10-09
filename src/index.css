@@ -1145,3 +1145,211 @@ td.wrap {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------- study guidance */
+
+.guide-pending {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+
+.spinner--sm {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+  margin: 0;
+  flex: none;
+}
+
+.guide-summary {
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.guide-credit {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.guide__label {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 14px 0 8px;
+}
+
+section > .guide__label:first-child {
+  margin-top: 0;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Long concept and topic names have to wrap on a phone. */
+.chips .chip,
+.concept__head .chip,
+.topic > .chip {
+  white-space: normal;
+}
+
+.concepts {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.concept {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.concept:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.concept__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 14px;
+}
+
+.concept__why {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.guide__steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.guide__steps li + li {
+  margin-top: 4px;
+}
+
+.guide {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border-left: 3px solid var(--accent);
+}
+
+.guide--pending {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border-left-color: var(--border-strong);
+}
+
+.guide__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.guide__reason {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.guide__diag {
+  font-size: 13.5px;
+  line-height: 1.55;
+  margin: 10px 0;
+}
+
+.topic + .topic {
+  margin-top: 14px;
+}
+
+.sources {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  font-size: 13.5px;
+}
+
+.concept .sources {
+  margin-top: 10px;
+}
+
+.source {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.source + .source {
+  margin-top: 10px;
+}
+
+.source__kind {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 3px 6px;
+  margin-top: 1px;
+  border-radius: 6px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.source__kind--video {
+  background: var(--bad-soft);
+  border-color: color-mix(in srgb, var(--bad) 30%, transparent);
+  color: var(--bad);
+}
+
+.source__kind--practice {
+  background: var(--good-soft);
+  border-color: color-mix(in srgb, var(--good) 30%, transparent);
+  color: var(--good);
+}
+
+.source a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.source a:hover {
+  text-decoration: underline;
+}
+
+.source__meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.source__checked {
+  color: var(--good);
+}
+
+.sources__why {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  line-height: 1.5;
+}

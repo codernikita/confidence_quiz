@@ -2,8 +2,10 @@ node_modules
 dist
 .env
 .env.local
+.env.production
 serviceAccountKey.json
 .DS_Store
 *.log
 .env.production
 __pycache__
+.lambda

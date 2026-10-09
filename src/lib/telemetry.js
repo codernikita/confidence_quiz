@@ -107,6 +107,7 @@ export function createTelemetry() {
           type: q.type || "",
           difficulty: q.difficulty || "medium",
           text: q.text,
+          prompt: q.prompt || "",
           options: q.options,
           correctAnswer: q.correctAnswer,
           explanation: q.explanation || "",

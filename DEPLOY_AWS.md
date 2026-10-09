@@ -317,6 +317,58 @@ chmod +x scripts/deploy_aws.sh
 
 ---
 
+## 9. The study-guidance API (Gemini, on Lambda)
+
+The results page asks a small API for Gemini's study guidance. It holds the
+Gemini key, so it cannot live in the static bundle. It runs on **AWS Lambda
+behind a function URL**, not behind CloudFront: a guidance call takes 40–120 s
+and CloudFront gives up on an origin after 60 s at most.
+
+The function URL is public, so the handler only serves students signed in to
+this quiz's Firebase project: the browser sends its Firebase ID token and the
+function verifies it (`server/auth.mjs`). The deploy script refuses to run
+without a Firebase project id.
+
+**9a. Permissions (once, by an account admin).** The deploy user needs to
+manage one function, one role and one log group:
+
+```bash
+./scripts/deploy_guidance_lambda.sh --print-policy > guidance-policy.json
+```
+
+An admin attaches it to the deploy user, either in the console (**IAM → Users →
+the deploy user → Add permissions → Create inline policy → JSON**) or with:
+
+```bash
+aws iam put-user-policy --profile <admin-profile> \
+  --user-name lakksh_bisDeployed \
+  --policy-name bis-quiz-guidance-deploy \
+  --policy-document file://guidance-policy.json
+```
+
+**9b. Deploy the API.** Reads `GEMINI_API_KEY` from `.env.local` (never
+printed), creates or updates the function, sets CORS on the URL to the site's
+origin only, smoke-tests it, and writes `VITE_GUIDANCE_API_URL` into
+`.env.production`:
+
+```bash
+SITE_ORIGIN=https://$DIST_DOMAIN ./scripts/deploy_guidance_lambda.sh
+```
+
+**9c. Rebuild the site** so it knows the API's address (step 8). Without
+`VITE_GUIDANCE_API_URL` a production build simply leaves guidance out.
+
+Re-run 9b after changing anything in `server/` or rotating the key. Logs:
+
+```bash
+aws logs tail /aws/lambda/bis-quiz-guidance --follow
+```
+
+Optional: `RESERVED_CONCURRENCY=5` on 9b caps simultaneous calls. New AWS
+accounts often cannot reserve concurrency; the script carries on without it.
+
+---
+
 ## Optional: a custom domain
 
 ACM certificates for CloudFront **must** live in `us-east-1`, whatever region
@@ -353,6 +405,8 @@ A class of 300 students is comfortably inside the free tiers.
 | S3 | ~1 MB stored, a few thousand GETs | pennies |
 | CloudFront | 1 TB/month + 10M requests free | $0 |
 | Firestore | 50k reads / 20k writes per day free | $0 |
+| Lambda (guidance) | 512 MB × ~60 s per attempt; 400k GB-s/month free ≈ 13,000 attempts | $0 |
+| Gemini API | one call per attempt | free tier, within its rate limits |
 
 One attempt = ~16 document reads (the bank) + 1 aggregation read (the prior-
 attempt count) + 1 write. 300 students ≈ 5,100 reads. Set
