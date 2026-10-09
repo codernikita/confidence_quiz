@@ -11,7 +11,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
@@ -35,8 +35,10 @@ const serviceAccount = JSON.parse(readFileSync(KEY_PATH, "utf8"));
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
+const questionsUrl = pathToFileURL(join(ROOT, "src", "data", "questions.js"));
+
 const { CALIBRATION_QUESTIONS, TECHNICAL_QUESTIONS, DEFAULT_CONFIG } =
-  await import(join(ROOT, "src", "data", "questions.js"));
+  await import(questionsUrl.href);
 
 const wipe = process.argv.includes("--wipe");
 

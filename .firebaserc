@@ -1,7 +1,5 @@
 {
   "projects": {
-    "default": "bis-deployed"
-  },
-  "targets": {},
-  "etags": {}
+    "default": "confidence-quiz-5b615"
+  }
 }
