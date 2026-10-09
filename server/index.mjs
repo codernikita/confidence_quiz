@@ -47,7 +47,8 @@ function readEnv() {
   const fromFiles = {};
   for (const file of [".env", ".env.local"]) {
     const p = path.join(ROOT, file);
-    if (existsSync(p)) Object.assign(fromFiles, parseEnv(readFileSync(p, "utf8")));
+    if (existsSync(p))
+      Object.assign(fromFiles, parseEnv(readFileSync(p, "utf8")));
   }
   return { ...fromFiles, ...SHELL_ENV };
 }
@@ -74,7 +75,9 @@ function chainsFor({ apiKey, models, thinkingLevel }) {
   if (cache.signature !== signature) {
     cache = {
       signature,
-      chains: apiKey ? createGuidanceChains({ apiKey, models, thinkingLevel }) : null,
+      chains: apiKey
+        ? createGuidanceChains({ apiKey, models, thinkingLevel })
+        : null,
     };
   }
   return cache.chains;
@@ -85,7 +88,9 @@ const MAX_BODY = 256 * 1024;
 // Long enough for a fallback after an overloaded primary plus a full answer.
 const TIMEOUT_MS = 180_000;
 // Only needed when the API is served from a different origin than the site.
-const ALLOWED_ORIGINS = list(process.env.GUIDANCE_ALLOWED_ORIGINS);
+const ALLOWED_ORIGINS = [
+  "[https://confidence-quiz-5b615.web.app](https://confidence-quiz-5b615.web.app)",
+];
 
 function send(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -99,7 +104,9 @@ function readJson(req) {
     req.on("data", (c) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(Object.assign(new Error("Request body too large"), { status: 413 }));
+        reject(
+          Object.assign(new Error("Request body too large"), { status: 413 }),
+        );
         req.destroy();
         return;
       }
@@ -109,7 +116,9 @@ function readJson(req) {
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch {
-        reject(Object.assign(new Error("Body is not valid JSON"), { status: 400 }));
+        reject(
+          Object.assign(new Error("Body is not valid JSON"), { status: 400 }),
+        );
       }
     });
     req.on("error", reject);
@@ -121,7 +130,8 @@ async function handleGuidance(req, res) {
   const chains = chainsFor(config);
   if (!chains) {
     return send(res, 503, {
-      error: "GEMINI_API_KEY is not set on the guidance server. Add it to .env.local.",
+      error:
+        "GEMINI_API_KEY is not set on the guidance server. Add it to .env.local.",
     });
   }
 
@@ -143,20 +153,27 @@ async function handleGuidance(req, res) {
   // Stop paying for a generation nobody is waiting for. `res` close (not `req`)
   // is the reliable client-disconnect signal once the body has been read.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("timeout")), TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(new Error("timeout")),
+    TIMEOUT_MS,
+  );
   res.on("close", () => {
     if (!res.writableEnded) controller.abort(new Error("client disconnected"));
   });
 
   const started = Date.now();
   try {
-    const { guidance, model, linkStats } = await generateGuidance(chains, parsed.data, {
-      signal: controller.signal,
-      onFallback: (m, err) =>
-        console.warn(
-          `[guidance] ${m} unavailable (${err?.status || err?.lc_error_code || "error"}), trying the next model`,
-        ),
-    });
+    const { guidance, model, linkStats } = await generateGuidance(
+      chains,
+      parsed.data,
+      {
+        signal: controller.signal,
+        onFallback: (m, err) =>
+          console.warn(
+            `[guidance] ${m} unavailable (${err?.status || err?.lc_error_code || "error"}), trying the next model`,
+          ),
+      },
+    );
     console.log(
       `[guidance] ${parsed.data.questions.length} questions by ${model} in ${((Date.now() - started) / 1000).toFixed(1)}s; ` +
         `links: ${linkStats.verified}/${linkStats.total} verified, ` +
@@ -190,7 +207,12 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   if (req.method === "GET" && url.pathname === "/api/health") {
     const { apiKey, models, thinkingLevel } = currentConfig();
-    return send(res, 200, { ok: true, models, thinkingLevel, hasKey: Boolean(apiKey) });
+    return send(res, 200, {
+      ok: true,
+      models,
+      thinkingLevel,
+      hasKey: Boolean(apiKey),
+    });
   }
   if (req.method === "POST" && url.pathname === "/api/guidance") {
     return handleGuidance(req, res);
@@ -200,7 +222,9 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   const { apiKey, models } = currentConfig();
-  console.log(`[guidance] listening on http://localhost:${PORT}  models=${models.join(" > ")}`);
+  console.log(
+    `[guidance] listening on http://localhost:${PORT}  models=${models.join(" > ")}`,
+  );
   if (!apiKey) {
     console.warn(
       "[guidance] GEMINI_API_KEY is not set yet -- the quiz will run without study guidance. " +
